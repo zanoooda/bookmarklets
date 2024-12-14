@@ -1,5 +1,5 @@
 javascript:(() => {
-    // Polyfill for requestAnimationFrame if not available
+    // Polyfill for requestAnimationFrame and cancelAnimationFrame if not available
     if (typeof requestAnimationFrame !== 'function') {
         window.requestAnimationFrame = cb => setTimeout(cb, 16);
     }
@@ -7,11 +7,12 @@ javascript:(() => {
         window.cancelAnimationFrame = id => clearTimeout(id);
     }
 
+    // Initialize global state if not already present
     if (!window.randomColorToggler) {
         window.randomColorToggler = {
             running: false,
             stopping: false,
-            originalStyles: new WeakMap(),
+            originalStyles: new Map(),
             schedule: [],
             rafId: null,
             initialized: false
@@ -20,70 +21,77 @@ javascript:(() => {
 
     const state = window.randomColorToggler;
 
+    // Function to generate a random color in hex format
     const getRandomColor = () => {
         try {
-            return '#' + Math.floor(Math.random() * 16777215).toString(16);
-        } catch (err) {
-            console.error('Error generating random color:', err);
-            return '#000000';
+            const color = '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
+            return color;
+        } catch (e) {
+            forceStop();
+            return '#000000'; // Fallback color
         }
     };
-    
+
+    // Function to generate a random delay between 1ms and 1500ms
     const getRandomDelay = () => {
         try {
             return Math.floor(Math.random() * 1500) + 1; // 1 to 1500 ms
-        } catch (err) {
-            console.error('Error generating random delay:', err);
-            return 500; // fallback
+        } catch (e) {
+            forceStop();
+            return 500; // Fallback delay
         }
     };
 
+    // Function to start the color animation
     const start = () => {
-        let elements;
         try {
-            elements = Array.from(document.querySelectorAll('*'));
-        } catch (err) {
-            console.error('Error querying elements:', err);
-            return;
-        }
+            const elements = Array.from(document.querySelectorAll('*'));
+            const now = performance.now();
 
-        const now = performance.now();
-
-        // On the very first start, record original inline styles
-        if (!state.initialized) {
-            for (const el of elements) {
-                // Ensure el is a valid node
-                if (el && el.getAttribute) {
-                    state.originalStyles.set(el, el.getAttribute('style'));
+            // Store original inline styles if not already done
+            if (!state.initialized) {
+                for (const el of elements) {
+                    if (el && el.getAttribute) {
+                        state.originalStyles.set(el, el.getAttribute('style'));
+                    }
                 }
+                state.initialized = true;
             }
-            state.initialized = true;
+
+            // Initialize schedule with a random start delay for each element
+            state.schedule = elements.map(el => ({
+                el,
+                nextTime: now + getRandomDelay(),
+                mode: 'color' // Mode can be 'color' or 'revert'
+            }));
+
+            state.running = true;
+            state.stopping = false;
+
+            update(now);
+        } catch (e) {
+            forceStop();
         }
-
-        // Schedule each element to start at a random time
-        state.schedule = elements.map(el => ({
-            el,
-            nextTime: now + getRandomDelay(),
-            mode: 'color'
-        }));
-
-        state.running = true;
-        state.stopping = false;
-
-        update(now);
     };
 
+    // Function to initiate stopping the color animation
     const initiateStop = () => {
-        if (state.stopping) return; // Already stopping
-        const now = performance.now();
-        state.stopping = true;
-        // Schedule revert for each element
-        for (const item of state.schedule) {
-            item.nextTime = now + getRandomDelay();
-            item.mode = 'revert';
+        if (state.stopping) return; // Prevent multiple stop initiations
+        try {
+            const now = performance.now();
+            state.stopping = true;
+
+            // Schedule each element to revert styles after a random delay
+            for (const item of state.schedule) {
+                item.nextTime = now + getRandomDelay();
+                item.mode = 'revert';
+            }
+        } catch (e) {
+            forceStop();
         }
     };
 
+    // Function to finalize stopping and clean up state
     const finalizeStop = () => {
         if (state.rafId) {
             cancelAnimationFrame(state.rafId);
@@ -94,6 +102,7 @@ javascript:(() => {
         state.schedule = [];
     };
 
+    // Function to restore the original inline style of an element
     const restoreOriginalStyle = (el) => {
         try {
             if (!el) return;
@@ -103,21 +112,48 @@ javascript:(() => {
             } else {
                 el.setAttribute('style', originalStyle);
             }
-        } catch (err) {
-            console.error('Error restoring original style:', err);
+        } catch (e) {
+            // Silently handle errors
         }
     };
 
+    // Function to apply random colors to an element
     const applyRandomColor = (el) => {
         try {
             if (!el) return;
             el.style.backgroundColor = getRandomColor();
             el.style.color = getRandomColor();
-        } catch (err) {
-            console.error('Error applying random color:', err);
+        } catch (e) {
+            forceStop();
         }
     };
 
+    // Function to forcefully stop animations and restore all styles
+    const forceStop = () => {
+        try {
+            if (state.rafId) {
+                cancelAnimationFrame(state.rafId);
+                state.rafId = null;
+            }
+
+            // Restore all original styles
+            for (const [el, originalStyle] of state.originalStyles.entries()) {
+                if (originalStyle === null) {
+                    el.removeAttribute('style');
+                } else {
+                    el.setAttribute('style', originalStyle);
+                }
+            }
+
+            state.running = false;
+            state.stopping = false;
+            state.schedule = [];
+        } catch (e) {
+            // Silently handle errors
+        }
+    };
+
+    // Update loop function
     const update = (timestamp) => {
         if (!state.running && !state.stopping) return;
 
@@ -126,55 +162,52 @@ javascript:(() => {
         try {
             for (const item of state.schedule) {
                 const el = item.el;
-                // Check if element still exists in DOM
+                // Check if the element still exists in the DOM
                 if (!el || !el.parentNode) {
-                    // Element removed from DOM, skip
                     continue;
                 }
 
                 if (timestamp >= item.nextTime) {
                     if (item.mode === 'color' && state.running && !state.stopping) {
-                        // Apply color and schedule next change
+                        // Apply random color and schedule next change
                         applyRandomColor(el);
                         item.nextTime = timestamp + getRandomDelay();
                         newSchedule.push(item);
                     } else if (item.mode === 'revert') {
-                        // Revert original style
+                        // Restore original style
                         restoreOriginalStyle(el);
-                        // No re-add, this element is done
+                        // Do not re-add to schedule, as it's reverted
                     } else {
-                        // If mode is unknown, just keep it (should not happen)
+                        // Unknown mode, keep in schedule
                         newSchedule.push(item);
                     }
                 } else {
-                    // Not time yet, just keep it
+                    // Not time yet, keep in schedule
                     newSchedule.push(item);
                 }
             }
-        } catch (err) {
-            console.error('Error during update cycle:', err);
+        } catch (e) {
+            forceStop();
         }
 
         state.schedule = newSchedule;
 
-        // If stopping and all elements reverted, finalize
+        // If stopping and all elements have reverted, finalize stop
         if (state.stopping && state.schedule.length === 0) {
             finalizeStop();
             return;
         }
 
+        // Continue the animation loop if running or stopping
         if (state.running || state.stopping) {
             state.rafId = requestAnimationFrame(update);
         }
     };
 
-    // Toggle logic
+    // Toggle logic: start or initiate stop
     if (state.running && !state.stopping) {
         initiateStop();
     } else if (!state.running) {
         start();
-    } else {
-        // If it's running and stopping, just let it finish
-        // or you could force immediate stop by finalizing if needed.
     }
 })();
